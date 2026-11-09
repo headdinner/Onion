@@ -810,6 +810,14 @@ int main(void)
                 break;
             }
 
+            // Onion custom (#1684): MENU+A / MENU+B hotkeys only count while MENU is still held.
+            // Releasing MENU first (e.g. after a MENU+L quick load) and keeping B held used to
+            // toggle the blue light filter 2 seconds later.
+            if (!b_BTN_Menu_Pressed) {
+                menuAndAPressed = false;
+                menuAndBPressed = false;
+            }
+
             // start screen recording after holding for >2secs
             if (menuAndAPressed && (getMilliseconds() - menuAndAPressedTime >= 2000)) {
                 if (access("/mnt/SDCARD/.tmp_update/config/.recHotkey", F_OK) != -1) {

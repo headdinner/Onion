@@ -1,6 +1,9 @@
 #ifndef GAME_SWITCHER_POP_MENU_H__
 #define GAME_SWITCHER_POP_MENU_H__
 
+#include <sys/stat.h>
+#include <time.h>
+
 #include "components/list.h"
 #include "system/lang.h"
 #include "theme/theme.h"
@@ -79,6 +82,7 @@ static bool _hasSaveStates(Game_s *game)
     return false;
 }
 
+// Onion custom (#1935): keep the 10 most recently written save states, newest first.
 static bool _scanSaveStates(Game_s *game, SaveStateInfo_s *info)
 {
     info->slot_count = 0;
@@ -96,6 +100,7 @@ static bool _scanSaveStates(Game_s *game, SaveStateInfo_s *info)
         return false;
     }
 
+    time_t mtimes[10] = {0};
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
         if (entry->d_type == DT_REG && strncmp(entry->d_name, game->rom_name, strlen(game->rom_name)) == 0) {
@@ -112,20 +117,27 @@ static bool _scanSaveStates(Game_s *game, SaveStateInfo_s *info)
                     }
                 }
 
+                char statePath[4096 + 256];
+                struct stat st;
+                snprintf(statePath, sizeof(statePath), "%s/%s", stateDirPath, entry->d_name);
+                time_t mtime = stat(statePath, &st) == 0 ? st.st_mtime : 0;
+
                 if (info->slot_count < 10) {
-                    info->slots[info->slot_count++] = slot;
+                    info->slots[info->slot_count] = slot;
+                    mtimes[info->slot_count] = mtime;
+                    info->slot_count++;
                 }
                 else {
-                    // Find the minimum slot in the array
-                    int min_index = 0;
+                    // Replace the oldest kept state if this one is newer
+                    int oldest = 0;
                     for (int i = 1; i < 10; i++) {
-                        if (info->slots[i] < info->slots[min_index]) {
-                            min_index = i;
+                        if (mtimes[i] < mtimes[oldest]) {
+                            oldest = i;
                         }
                     }
-                    // Replace the minimum slot if the current slot is higher
-                    if (slot > info->slots[min_index]) {
-                        info->slots[min_index] = slot;
+                    if (mtime > mtimes[oldest]) {
+                        info->slots[oldest] = slot;
+                        mtimes[oldest] = mtime;
                     }
                 }
             }
@@ -134,13 +146,16 @@ static bool _scanSaveStates(Game_s *game, SaveStateInfo_s *info)
 
     closedir(dir);
 
-    // Sort the slots in descending order
+    // Sort newest first (ties: higher slot first)
     for (int i = 0; i < info->slot_count - 1; i++) {
         for (int j = i + 1; j < info->slot_count; j++) {
-            if (info->slots[j] > info->slots[i]) {
-                int temp = info->slots[i];
+            if (mtimes[j] > mtimes[i] || (mtimes[j] == mtimes[i] && info->slots[j] > info->slots[i])) {
+                int temp_slot = info->slots[i];
                 info->slots[i] = info->slots[j];
-                info->slots[j] = temp;
+                info->slots[j] = temp_slot;
+                time_t temp_time = mtimes[i];
+                mtimes[i] = mtimes[j];
+                mtimes[j] = temp_time;
             }
         }
     }
@@ -213,7 +228,15 @@ static void *_save_thread(void *_)
         return NULL;
     }
 
-    int slot = g_save_state_info.slot_count > 0 ? g_save_state_info.slots[0] + 1 : 1;
+    // Onion custom (#1935): continue after the most recently written slot and wrap 9 -> 0,
+    // like RetroArch's 10 slots, instead of always taking the highest slot + 1.
+    int slot = 1;
+    if (g_save_state_info.slot_count > 0) {
+        slot = g_save_state_info.slots[0] + 1;
+        if (slot > 9) {
+            slot = 0;
+        }
+    }
     printf_debug("Saving state to slot %d\n", slot);
 
     char stateFilePath[4096];
