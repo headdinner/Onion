@@ -6,7 +6,7 @@ mkdir -p out
 for r in "$@"; do
   case $r in
     pcsx_rearmed) mk="-f Makefile.libretro" ;;
-    picodrive) mk="-f Makefile.libretro" ;;
+    picodrive) mk="-f Makefile.libretro LOW_MEMORY=1" ;;  # load CD images from path, not into the 128 MB RAM
     *) mk="" ;;
   esac
   echo "== building $r"
