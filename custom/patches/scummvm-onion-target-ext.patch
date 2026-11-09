@@ -1,0 +1,16 @@
+diff --git a/backends/platform/libretro/src/libretro-core.cpp b/backends/platform/libretro/src/libretro-core.cpp
+index 5cf037d6..b4902729 100644
+--- a/backends/platform/libretro/src/libretro-core.cpp
++++ b/backends/platform/libretro/src/libretro-core.cpp
+@@ -1174,7 +1174,10 @@ bool retro_load_game(const struct retro_game_info *game) {
+ 		int target_file_ext_pos = strlen(game->path) - strlen(target_file_ext);
+ 
+ 		// See if we are loading a .scummvm file.
+-		if (!(target_file_ext_pos < 0) && strstr(game->path + target_file_ext_pos, target_file_ext) != NULL) {
++		// Onion OS: .target shortcut files hold a target id, same as .scummvm
++		int onion_target_ext_pos = strlen(game->path) - strlen(".target");
++		bool onion_target_file = onion_target_ext_pos >= 0 && strcmp(game->path + onion_target_ext_pos, ".target") == 0;
++		if ((!(target_file_ext_pos < 0) && strstr(game->path + target_file_ext_pos, target_file_ext) != NULL) || onion_target_file) {
+ 			// Open the file.
+ 			RFILE *gamefile = filestream_open(game->path, RETRO_VFS_FILE_ACCESS_READ, RETRO_VFS_FILE_ACCESS_HINT_NONE);
+ 			if (!gamefile) {
