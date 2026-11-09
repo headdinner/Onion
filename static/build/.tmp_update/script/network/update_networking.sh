@@ -503,7 +503,8 @@ check_ntpstate() {
         if [ "$got_ip" -eq 1 ]; then
             while true; do
                 log "NTPwait: get_time attempt $attempts"
-                if ping -q -c 1 -W 1 worldtimeapi.org > /dev/null 2>&1; then
+                # Onion custom (#1928): any reachable host will do, worldtimeapi.org is often down
+                if ping -q -c 1 -W 1 time.google.com > /dev/null 2>&1 || ping -q -c 1 -W 1 1.1.1.1 > /dev/null 2>&1 || ping -q -c 1 -W 1 8.8.8.8 > /dev/null 2>&1; then
                     if get_time; then
                         ret_val=0
                         break
@@ -525,56 +526,64 @@ check_ntpstate() {
     return "$ret_val"
 }
 
-get_time() { # handles 2 types of network time, instant from an API or longer from an NTP server, if the instant API checks fails it will fallback to the longer ntp
+get_time() { # Onion custom (#1928): NTP is the authoritative clock; the web APIs are only used for the
+    # timezone offset, and for the clock only when NTP is unreachable. timeapi.io has been seen returning
+    # timestamps ~24 minutes stale, which used to be accepted and written to the RTC.
     log "NTP: started time update"
 
-    response=$(curl -s -m 3 http://worldtimeapi.org/api/ip.txt)
-    utc_datetime=$(echo "$response" | grep -o 'utc_datetime: [^.]*' | cut -d ' ' -f2 | sed "s/T/ /")
     if ! flag_enabled "manual_tz"; then
-        utc_offset="UTC$(echo "$response" | grep -o 'utc_offset: [^.]*' | cut -d ' ' -f2)"
-    fi
-
-    if [ -z "$utc_datetime" ]; then
-        log "NTP: Failed to get time from worldtimeapi.org, trying timeapi.io"
-        utc_datetime=$(curl -s -k -m 5 https://timeapi.io/api/Time/current/zone?timeZone=UTC | grep -o '"dateTime":"[^.]*' | cut -d '"' -f4 | sed 's/T/ /')
-        if ! flag_enabled "manual_tz"; then
+        utc_offset=""
+        response=$(curl -s -m 3 http://worldtimeapi.org/api/ip.txt)
+        api_offset=$(echo "$response" | grep -o 'utc_offset: [^.]*' | cut -d ' ' -f2)
+        [ -n "$api_offset" ] && utc_offset="UTC$api_offset"
+        if [ -z "$utc_offset" ]; then
+            log "NTP: no timezone from worldtimeapi.org, trying timeapi.io"
             ip_address=$(curl -s -k -m 5 https://api.ipify.org)
-            utc_offset_seconds=$(curl -s -k -m 5 https://timeapi.io/api/TimeZone/ip?ipAddress=$ip_address | jq '.currentUtcOffset.seconds')
-            utc_offset="$(convert_seconds_to_utc_offset $utc_offset_seconds)"
+            utc_offset_seconds=$(curl -s -k -m 5 "https://timeapi.io/api/TimeZone/ip?ipAddress=$ip_address" | jq '.currentUtcOffset.seconds')
+            case "$utc_offset_seconds" in
+                "" | null) ;;
+                *) utc_offset="$(convert_seconds_to_utc_offset $utc_offset_seconds)" ;;
+            esac
         fi
-    fi
-
-    if [ -n "$utc_datetime" ]; then
-        playActivity stop_all
-
         if [ -n "$utc_offset" ]; then
             echo "$utc_offset" | sed 's/\+/_/' | sed 's/-/+/' | sed 's/_/-/' > $sysdir/config/.tz
             cp $sysdir/config/.tz $sysdir/config/.tz_sync
             sync
             set_tzid
+        else
+            log "NTP: could not determine timezone, keeping the current one"
+            rm $sysdir/config/.tz_sync 2> /dev/null
         fi
+    fi
 
-        if date -u -s "$utc_datetime" > /dev/null 2>&1; then
+    playActivity stop_all
+
+    for ntp_server in time.google.com pool.ntp.org time.cloudflare.com; do
+        if ntpdate -t 3 -u "$ntp_server" > /dev/null 2>&1; then
             hwclock -w
-            log "NTP: Time successfully aquired using API"
+            log "NTP: Time successfully aquired using NTP ($ntp_server)"
             touch /tmp/ntp_synced
             playActivity resume
             return 0
         fi
+        log "NTP: $ntp_server did not answer"
+    done
 
-        playActivity resume
+    log "NTP: NTP unreachable, falling back to the web time APIs"
+    utc_datetime=$(curl -s -m 3 http://worldtimeapi.org/api/ip.txt | grep -o 'utc_datetime: [^.]*' | cut -d ' ' -f2 | sed "s/T/ /")
+    if [ -z "$utc_datetime" ]; then
+        utc_datetime=$(curl -s -k -m 5 https://timeapi.io/api/Time/current/zone?timeZone=UTC | grep -o '"dateTime":"[^.]*' | cut -d '"' -f4 | sed 's/T/ /')
     fi
-
-    log "NTP: Failed to get time via timeapi.io as well, falling back to NTP."
-    rm $sysdir/config/.tz_sync 2> /dev/null
-
-    ntpdate -t 3 -u time.google.com
-    if [ $? -eq 0 ]; then
-        log "NTP: Time successfully aquired using NTP"
+    if [ -n "$utc_datetime" ] && date -u -s "$utc_datetime" > /dev/null 2>&1; then
+        hwclock -w
+        log "NTP: Time aquired using a web API (NTP was unreachable)"
+        touch /tmp/ntp_synced
+        playActivity resume
         return 0
     fi
 
-    log "NTP: Failed to synchronize time using NTPdate, both methods have failed."
+    playActivity resume
+    log "NTP: Failed to synchronize time, all methods have failed."
     return 1
 }
 
