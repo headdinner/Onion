@@ -4,7 +4,7 @@ supported_extensions = "bin|cue|img|mdf|pbp|toc|cbn|m3u|ccd|chd"
 corename = "PCSX-ReARMed"
 license = "GPLv2"
 permissions = "dynarec"
-display_version = "r21"
+display_version = "git-7b0e8f8 (2026-10-29)"
 categories = "Emulator"
 
 # Hardware Information
