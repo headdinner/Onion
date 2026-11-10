@@ -993,9 +993,15 @@ runifnecessary() {
     while [ "$a" == "" ] && [ $cnt -lt 8 ]; do
         log "try to run: $2"
         $2 $3 &
-        sleep 0.5
+        # Onion custom: poll every 0.1 s (up to the old 0.5 s) instead of always sleeping 0.5 s
+        w=0
+        while [ $w -lt 5 ]; do
+            sleep 0.1
+            a=$(pgrep $1)
+            [ -n "$a" ] && break
+            w=$((w + 1))
+        done
         cnt=$(expr $cnt + 1)
-        a=$(pgrep $1)
     done
 }
 

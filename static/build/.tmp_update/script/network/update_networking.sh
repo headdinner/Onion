@@ -98,7 +98,7 @@ check() {
     if [ "$has_wifi" -eq 1 ] && flag_enabled ntpWait && [ $is_booting -eq 1 ]; then
         bootScreen Boot "Syncing time..."
         check_ntpstate && bootScreen Boot "Time synced: $(date +"%H:%M")" || bootScreen Boot "Time sync failed"
-        sleep 1
+        sleep 0.5 # Onion custom: was 1 s
     elif wifi_enabled; then
         check_ntpstate &
     fi
@@ -476,7 +476,7 @@ check_ntpstate() {
         fi
 
         attempts=0
-        max_wait_ip=10
+        max_wait_ip=40 # Onion custom: 0.25 s polls, same 10 s ceiling
         max_attempts=3
         ret_val=1
         got_ip=0
@@ -485,7 +485,7 @@ check_ntpstate() {
             ip=$(ifconfig wlan0 | grep 'inet addr:' | cut -d: -f2 | cut -d' ' -f1)
             if [ -z "$ip" ]; then
                 attempts=$((attempts + 1))
-                log "NTPwait: Waiting for IP address since $attempts seconds"
+                [ $((attempts % 4)) -eq 0 ] && log "NTPwait: Waiting for IP address since $((attempts / 4)) seconds"
                 if [ $attempts -ge $max_wait_ip ]; then
                     log "NTPwait: Could not aquire an IP address"
                     ret_val=1
@@ -497,7 +497,7 @@ check_ntpstate() {
                 got_ip=1
                 break
             fi
-            sleep 1
+            sleep 0.25
         done
         attempts=0
         if [ "$got_ip" -eq 1 ]; then
@@ -526,33 +526,45 @@ check_ntpstate() {
     return "$ret_val"
 }
 
+# Onion custom: timezone lookup from the web APIs (split out of get_time so boot can run it in the background)
+update_tz() {
+    utc_offset=""
+    response=$(curl -s -m 3 http://worldtimeapi.org/api/ip.txt)
+    api_offset=$(echo "$response" | grep -o 'utc_offset: [^.]*' | cut -d ' ' -f2)
+    [ -n "$api_offset" ] && utc_offset="UTC$api_offset"
+    if [ -z "$utc_offset" ]; then
+        log "NTP: no timezone from worldtimeapi.org, trying timeapi.io"
+        ip_address=$(curl -s -k -m 5 https://api.ipify.org)
+        utc_offset_seconds=$(curl -s -k -m 5 "https://timeapi.io/api/TimeZone/ip?ipAddress=$ip_address" | jq '.currentUtcOffset.seconds')
+        case "$utc_offset_seconds" in
+            "" | null) ;;
+            *) utc_offset="$(convert_seconds_to_utc_offset $utc_offset_seconds)" ;;
+        esac
+    fi
+    if [ -n "$utc_offset" ]; then
+        echo "$utc_offset" | sed 's/\+/_/' | sed 's/-/+/' | sed 's/_/-/' > $sysdir/config/.tz
+        cp $sysdir/config/.tz $sysdir/config/.tz_sync
+        sync
+        set_tzid
+    else
+        log "NTP: could not determine timezone, keeping the current one"
+        rm $sysdir/config/.tz_sync 2> /dev/null
+    fi
+}
+
 get_time() { # Onion custom (#1928): NTP is the authoritative clock; the web APIs are only used for the
     # timezone offset, and for the clock only when NTP is unreachable. timeapi.io has been seen returning
     # timestamps ~24 minutes stale, which used to be accepted and written to the RTC.
     log "NTP: started time update"
 
     if ! flag_enabled "manual_tz"; then
-        utc_offset=""
-        response=$(curl -s -m 3 http://worldtimeapi.org/api/ip.txt)
-        api_offset=$(echo "$response" | grep -o 'utc_offset: [^.]*' | cut -d ' ' -f2)
-        [ -n "$api_offset" ] && utc_offset="UTC$api_offset"
-        if [ -z "$utc_offset" ]; then
-            log "NTP: no timezone from worldtimeapi.org, trying timeapi.io"
-            ip_address=$(curl -s -k -m 5 https://api.ipify.org)
-            utc_offset_seconds=$(curl -s -k -m 5 "https://timeapi.io/api/TimeZone/ip?ipAddress=$ip_address" | jq '.currentUtcOffset.seconds')
-            case "$utc_offset_seconds" in
-                "" | null) ;;
-                *) utc_offset="$(convert_seconds_to_utc_offset $utc_offset_seconds)" ;;
-            esac
-        fi
-        if [ -n "$utc_offset" ]; then
-            echo "$utc_offset" | sed 's/\+/_/' | sed 's/-/+/' | sed 's/_/-/' > $sysdir/config/.tz
-            cp $sysdir/config/.tz $sysdir/config/.tz_sync
-            sync
-            set_tzid
+        if [ "$is_booting" -eq 1 ] && [ -f $sysdir/config/.tz_sync ] && [ -s $sysdir/config/.tz ]; then
+            # Onion custom: at boot keep the last synced timezone and refresh it in the background,
+            # so the boot screen only waits for the clock itself (NTP).
+            log "NTP: boot, using the cached timezone and refreshing it in the background"
+            update_tz &
         else
-            log "NTP: could not determine timezone, keeping the current one"
-            rm $sysdir/config/.tz_sync 2> /dev/null
+            update_tz
         fi
     fi
 
